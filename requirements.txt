@@ -1,0 +1,10 @@
+certifi
+langchain
+nltk
+fastapi
+pdfminer.six
+pickle4
+openai
+tiktoken
+faiss-cpu
+uvicorn
