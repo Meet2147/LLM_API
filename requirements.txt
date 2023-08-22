@@ -5,6 +5,6 @@ fastapi
 pdfminer.six
 pickle4
 openai
-tiktoken
+tiktoken==0.4.0
 faiss-cpu
 uvicorn
