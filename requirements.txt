@@ -9,3 +9,4 @@ tiktoken
 faiss-cpu
 uvicorn
 python-multipart
+unstructured
