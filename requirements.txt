@@ -5,6 +5,7 @@ fastapi
 pdfminer.six
 pickle4
 openai
+langchain-openai
 tiktoken
 faiss-cpu
 uvicorn
