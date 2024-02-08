@@ -1,4 +1,5 @@
 certifi
+langchain
 langchain-community
 nltk
 fastapi
