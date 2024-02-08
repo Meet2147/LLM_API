@@ -1,5 +1,5 @@
 certifi
-langchain
+langchain-comunity
 nltk
 fastapi
 pdfminer.six
