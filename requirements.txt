@@ -12,3 +12,4 @@ faiss-cpu
 uvicorn
 python-multipart
 unstructured
+pandas
