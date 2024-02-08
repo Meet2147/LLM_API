@@ -3,73 +3,85 @@ from fastapi import FastAPI, UploadFile, File, Query
 from tempfile import NamedTemporaryFile
 import pdfminer
 from pdfminer.high_level import extract_text
-from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from langchain.text_splitter import CharacterTextSplitter
-from langchain.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS
 from langchain.chains.question_answering import load_qa_chain
 from langchain.llms import OpenAI
-import os
-from langchain.document_loaders import UnstructuredURLLoader
+from langchain_community.document_loaders import UnstructuredURLLoader
 from langchain.chains import RetrievalQAWithSourcesChain
+from langchain_community.document_loaders.csv_loader import CSVLoader
+from langchain_community.document_loaders import UnstructuredPowerPointLoader
 from langchain import OpenAI
 from langchain.callbacks import get_openai_callback
-import openai
-from langchain.vectorstores import FAISS
-from langchain.embeddings import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import CharacterTextSplitter
 from fastapi import FastAPI, HTTPException, Query
+from pathlib import Path
 import certifi
-
+import os
 import nltk
+import pandas as pd
+
 
 nltk.download("averaged_perceptron_tagger")
 
 os.environ["SSL_CERT_FILE"] = certifi.where()
 app = FastAPI()
 
-def load_model_and_vector_store(url, openai_token):
-    # Set the OpenAI API key
-    os.environ["OPENAI_API_KEY"] = openai_token
 
-    # Load data from the provided URL
-    loaders = UnstructuredURLLoader(urls=[url])
-    data = loaders.load()
+TEMP_FOLDER = Path("./temp")
+TEMP_FOLDER.mkdir(exist_ok=True)  # Ensure the temp folder exists
 
-    # Split the loaded text into chunks
-    text_splitter = CharacterTextSplitter(separator='\n', chunk_size=1000, chunk_overlap=200)
-    docs = text_splitter.split_documents(data)
+# Define file handling and processing functions
+def convert_excel_to_csv(excel_file):
+    df = pd.read_excel(excel_file.file, engine='openpyxl')
+    temp_csv_path = TEMP_FOLDER / f"{excel_file.filename}.csv"
+    df.to_csv(temp_csv_path, index=False, encoding='utf-8')
+    return temp_csv_path
 
-    # Create OpenAI embeddings for the documents
-    embeddings = OpenAIEmbeddings()
+def save_uploaded_file(uploaded_file, suffix):
+    temp_file_path = TEMP_FOLDER / f"{uploaded_file.filename}{suffix}"
+    with open(temp_file_path, "wb") as f:
+        f.write(uploaded_file.file.read())
+    return temp_file_path
 
-    # Build a FAISS vector store using the documents and embeddings
-    vectorStore_openAI = FAISS.from_documents(docs, embeddings)
+def process_csv(file_path):
+    loader = CSVLoader(str(file_path))  # Convert path to string
+    data = loader.load()
+    return data
 
-    # Save the vector store to a file
-    with open("faiss_store_openai.pkl", "wb") as f:
-        pickle.dump(vectorStore_openAI, f)
+def process_powerpoint(file_path):
+    loader = UnstructuredPowerPointLoader(str(file_path))  # Convert path to string
+    data = loader.load()
+    return data
 
-    # Load the vector store from the file
-    with open("faiss_store_openai.pkl", "rb") as f:
-        VectorStore = pickle.load(f)
 
-    # Create a retrieval question-answering chain
-    llm = OpenAI(temperature=0, model_name='text-davinci-003')
-    chain = RetrievalQAWithSourcesChain.from_llm(llm=llm, retriever=VectorStore.as_retriever())
+def process_file(uploaded_file: UploadFile = File(...), openai_api_key: str = File(...)):
+    # Determine the file type and process accordingly
+    if uploaded_file.filename.endswith('.xlsx'):
+        tmp_file_path = convert_excel_to_csv(uploaded_file)
+        data = process_csv(tmp_file_path)
+    elif uploaded_file.filename.endswith('.csv'):
+        tmp_file_path = save_uploaded_file(uploaded_file, ".csv")
+        data = process_csv(tmp_file_path)
+    elif uploaded_file.filename.endswith('.pptx'):
+        tmp_file_path = save_uploaded_file(uploaded_file, ".pptx")
+        data = process_powerpoint(tmp_file_path)
+    
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
 
-    return chain
-
-@app.post("/qa/")
-def question_answering(url: str = Query(..., alias="url"), query: str = Query(..., alias="query"), openai_token: str = Query(..., alias="openai_token")):
-    # Load the model and vector store for the provided URL and OpenAI token
-    qa_chain = load_model_and_vector_store(url, openai_token)
-
-    response = qa_chain(query, return_only_outputs=True)
-    return {
-        "query": query,
-        "answer": response["answer"],
-        "source": response["sources"],
-    }
+    # Process the data to generate embeddings and a retrieval chain
+    
+    embeddings = OpenAIEmbeddings(api_key=openai_api_key)
+    vectors = FAISS.from_documents(data, embeddings)
+    chain = RetrievalQAWithSourcesChain.from_llm(
+        llm=ChatOpenAI(temperature=0.0, model_name='gpt-3.5-turbo', openai_api_key=openai_api_key),
+        retriever=vectors.as_retriever()
+    )
+    return chain 
 
 @app.post("/process_pdf")
 async def process_pdf_endpoint(
@@ -113,11 +125,56 @@ async def process_pdf_endpoint(
             "query": query,
             "answer": response,
         }
+    
 
-    # Remove the temporary PDF file
-    os.remove(temp_file_path)
+@app.post("/process_excel/")
+async def process_pdf_endpoint(
+    file: UploadFile = File(...),
+    query: str = Query(..., alias="query"),
+    openai_token: str = Query(..., description="OpenAI API key"),
+):
+    # Load the model and vector store for the provided URL and OpenAI token
+    qa_chain = process_file(file, openai_token)
 
-    return results
+    response = qa_chain(query, return_only_outputs=True)
+    print(response)
+    return{
+            "query": query,
+            "answer": response['answer'],
+        }
+
+@app.post("/process_csv/")
+async def process_pdf_endpoint(
+    file: UploadFile = File(...),
+    query: str = Query(..., alias="query"),
+    openai_token: str = Query(..., description="OpenAI API key"),
+):
+    # Load the model and vector store for the provided URL and OpenAI token
+    qa_chain = process_file(file, openai_token)
+
+    response = qa_chain(query, return_only_outputs=True)
+    print(response)
+    return{
+            "query": query,
+            "answer": response['answer'],
+        }
+
+@app.post("/process_ppt/")
+async def process_pdf_endpoint(
+    file: UploadFile = File(...),
+    query: str = Query(..., alias="query"),
+    openai_token: str = Query(..., description="OpenAI API key"),
+):
+    # Load the model and vector store for the provided URL and OpenAI token
+    qa_chain = process_file(file, openai_token)
+
+    response = qa_chain(query, return_only_outputs=True)
+    print(response)
+    return{
+            "query": query,
+            "answer": response['answer'],
+        }
+    
 
 if __name__ == "__main__":
     import uvicorn
